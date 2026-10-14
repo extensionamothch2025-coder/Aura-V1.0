@@ -16,6 +16,7 @@ dependencies:
   http: ^1.6.0
   local_auth: ^2.3.0
   path_provider: ^2.1.6
+  pointycastle: ^3.9.1
   provider: ^6.1.2
   flutter_secure_storage: ^9.2.4
   flutter_tts: ^4.2.5

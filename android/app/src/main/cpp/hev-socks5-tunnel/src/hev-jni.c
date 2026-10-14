@@ -418,7 +418,7 @@ native_set_blocked_ips (JNIEnv *env, jobject thiz, jobjectArray addresses)
         return;
     }
 
-    for (i = 0; i < input_count && count < capacity; i++) {
+    for (i = 0; i < input_count && (count_ipv4 + count_ipv6) < capacity; i++) {
         jstring value = (jstring)(*env)->GetObjectArrayElement (env, addresses, i);
         const char *text;
         struct in_addr address_ipv4;

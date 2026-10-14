@@ -3,7 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define AURA_MODEL_MAX_CIPHERTEXT (5U * 1024U * 1024U + 16U)
+#define AURA_GCM_IV_LENGTH 12
+#define AURA_GCM_TAG_LENGTH 16
+#define AURA_MODEL_MAX_CIPHERTEXT (5U * 1024U * 1024U + AURA_GCM_TAG_LENGTH)
 
 void
 aura_secure_mem_clear (void *buffer, size_t length)
@@ -37,9 +39,9 @@ clear_pending_exception_while_wiping (JNIEnv *env, jbyteArray key_bytes,
     if ((*env)->ExceptionCheck (env))
         (*env)->ExceptionClear (env);
     clear_java_array (env, key_bytes, 32);
-    clear_java_array (env, iv_bytes, 16);
+    clear_java_array (env, iv_bytes, AURA_GCM_IV_LENGTH);
     clear_java_array (env, java_key, 32);
-    clear_java_array (env, java_iv, 16);
+    clear_java_array (env, java_iv, AURA_GCM_IV_LENGTH);
     if (error)
         (*env)->Throw (env, error);
 }
@@ -69,14 +71,14 @@ Java_com_aura_cyberdefense_AuraCryptoSecure_decryptModelNative (
     ciphertext_length = (*env)->GetArrayLength (env, encrypted_data);
     key_length = (*env)->GetArrayLength (env, key_bytes);
     iv_length = (*env)->GetArrayLength (env, iv_bytes);
-    if (ciphertext_length < 16 ||
+    if (ciphertext_length < AURA_GCM_TAG_LENGTH ||
         ciphertext_length > (jsize)AURA_MODEL_MAX_CIPHERTEXT ||
-        (ciphertext_length % 16) != 0 || key_length != 32 || iv_length != 16)
+        key_length != 32 || iv_length != AURA_GCM_IV_LENGTH)
         goto cleanup;
 
     ciphertext = malloc ((size_t)ciphertext_length);
     key = malloc (32);
-    iv = malloc (16);
+    iv = malloc (AURA_GCM_IV_LENGTH);
     if (!ciphertext || !key || !iv)
         goto cleanup;
 
@@ -122,7 +124,7 @@ cleanup:
     if (key)
         aura_secure_mem_clear (key, 32);
     if (iv)
-        aura_secure_mem_clear (iv, 16);
+        aura_secure_mem_clear (iv, AURA_GCM_IV_LENGTH);
     if (ciphertext)
         aura_secure_mem_clear (ciphertext,
                               ciphertext_length > 0
@@ -139,9 +141,9 @@ cleanup:
         (*env)->DeleteLocalRef (env, pending_exception);
     } else {
         clear_java_array (env, key_bytes, 32);
-        clear_java_array (env, iv_bytes, 16);
+        clear_java_array (env, iv_bytes, AURA_GCM_IV_LENGTH);
         clear_java_array (env, java_key, 32);
-        clear_java_array (env, java_iv, 16);
+        clear_java_array (env, java_iv, AURA_GCM_IV_LENGTH);
     }
 
     if (java_ciphertext)

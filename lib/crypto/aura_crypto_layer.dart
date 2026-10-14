@@ -5,6 +5,7 @@ import 'package:encrypt/encrypt.dart';
 import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/services.dart';
+import 'package:pointycastle/export.dart';
 
 class AuraCryptoException implements Exception {
   const AuraCryptoException(this.message, [this.cause]);
@@ -17,11 +18,11 @@ class AuraCryptoException implements Exception {
 }
 
 abstract final class AuraCryptoLayer {
-  static const int _ivLength = 16;
-  static const int _aesBlockLength = 16;
+  static const int _ivLength = 12;
+  static const int _gcmTagLength = 16;
   static const int _maxModelPlaintextBytes = 5 * 1024 * 1024;
   static const int _maxModelCiphertextBytes =
-      _maxModelPlaintextBytes + _aesBlockLength;
+      _maxModelPlaintextBytes + _gcmTagLength;
   static const int _sha256Length = 32;
   static const int _rsa2048SignatureLength = 256;
   static const int _hkdfMaximumLength = 255 * _sha256Length;
@@ -37,7 +38,7 @@ abstract final class AuraCryptoLayer {
     0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20,
   ];
   static const String _derivationSalt = 'Aura Mobile Defens model key v1';
-  static const String _derivationInfo = 'aura-model-aes-256-cbc-pkcs7';
+  static const String _derivationInfo = 'aura-model-aes-256-gcm';
 
   /// Overwrites this buffer in place; Dart VM copies and immutable values cannot be erased.
   static void secureZeroMemory(Uint8List buffer) {
@@ -347,6 +348,8 @@ abstract final class AuraCryptoLayer {
     String secureKey, {
     IV? iv,
   }) {
+    Uint8List? derivedKey;
+    Uint8List? plaintextBytes;
     try {
       if (secureKey.isEmpty) {
         throw const AuraCryptoException('La clave segura está vacía.');
@@ -359,29 +362,45 @@ abstract final class AuraCryptoLayer {
 
       final initializationVector = iv ?? IV.fromSecureRandom(_ivLength);
       if (initializationVector.bytes.length != _ivLength) {
-        throw const AuraCryptoException('El vector IV AES debe tener 16 bytes.');
+        throw const AuraCryptoException('El nonce GCM AES debe tener 12 bytes.');
       }
-      final derivedKey = _deriveKey(secureKey);
-      late final Encrypted ciphertext;
-      try {
-        ciphertext = Encrypter(
-          AES(Key(derivedKey), mode: AESMode.cbc, padding: 'PKCS7'),
-        ).encrypt(plaintext, iv: initializationVector);
-      } finally {
-        secureZeroMemory(derivedKey);
+      plaintextBytes = Uint8List.fromList(utf8.encode(plaintext));
+      if (plaintextBytes.isEmpty ||
+          plaintextBytes.length > _maxModelPlaintextBytes) {
+        throw const AuraCryptoException(
+          'La longitud del modelo plaintext no es válida.',
+        );
       }
+      derivedKey = _deriveKey(secureKey);
+      final cipher = GCMBlockCipher(AESEngine())
+        ..init(
+          true,
+          AEADParameters(
+            KeyParameter(derivedKey),
+            _gcmTagLength * 8,
+            initializationVector.bytes,
+            Uint8List(0),
+          ),
+        );
+      final ciphertext = cipher.process(plaintextBytes);
       return <int>[
         ...initializationVector.bytes,
-        ...ciphertext.bytes,
+        ...ciphertext,
       ].map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
     } on AuraCryptoException {
       rethrow;
     } on Object catch (error) {
       throw AuraCryptoException('No se pudo cifrar el modelo.', error);
+    } finally {
+      if (derivedKey != null) secureZeroMemory(derivedKey);
+      if (plaintextBytes != null) secureZeroMemory(plaintextBytes);
     }
   }
 
   static String decryptModel(String encryptedHex, String secureKey) {
+    Uint8List? payload;
+    Uint8List? derivedKey;
+    Uint8List? plaintextBytes;
     try {
       if (secureKey.isEmpty) {
         throw const AuraCryptoException('La clave segura está vacía.');
@@ -392,7 +411,7 @@ abstract final class AuraCryptoLayer {
         throw const AuraCryptoException('El payload hexadecimal no es válido.');
       }
 
-      final payload = Uint8List.fromList(
+      payload = Uint8List.fromList(
         List<int>.generate(
           encryptedHex.length ~/ 2,
           (index) => int.parse(
@@ -402,33 +421,36 @@ abstract final class AuraCryptoLayer {
           growable: false,
         ),
       );
-      try {
-        final ciphertextLength = payload.length - _ivLength;
-        if (ciphertextLength < _aesBlockLength ||
-            ciphertextLength % _aesBlockLength != 0) {
-          throw const AuraCryptoException(
-            'La longitud del ciphertext AES no es válida.',
-          );
-        }
-        final iv = IV(Uint8List.sublistView(payload, 0, _ivLength));
-        final ciphertext = Encrypted(
-          Uint8List.sublistView(payload, _ivLength),
+      final ciphertextLength = payload.length - _ivLength;
+      if (ciphertextLength < _gcmTagLength ||
+          ciphertextLength > _maxModelCiphertextBytes) {
+        throw const AuraCryptoException(
+          'La longitud del ciphertext GCM no es válida.',
         );
-        final derivedKey = _deriveKey(secureKey);
-        try {
-          return Encrypter(
-            AES(Key(derivedKey), mode: AESMode.cbc, padding: 'PKCS7'),
-          ).decrypt(ciphertext, iv: iv);
-        } finally {
-          secureZeroMemory(derivedKey);
-        }
-      } finally {
-        secureZeroMemory(payload);
       }
+      final ivBytes = Uint8List.sublistView(payload, 0, _ivLength);
+      final ciphertext = Uint8List.sublistView(payload, _ivLength);
+      derivedKey = _deriveKey(secureKey);
+      final cipher = GCMBlockCipher(AESEngine())
+        ..init(
+          false,
+          AEADParameters(
+            KeyParameter(derivedKey),
+            _gcmTagLength * 8,
+            ivBytes,
+            Uint8List(0),
+          ),
+        );
+      plaintextBytes = cipher.process(ciphertext);
+      return utf8.decode(plaintextBytes);
     } on AuraCryptoException {
       rethrow;
     } on Object catch (error) {
       throw AuraCryptoException('No se pudo descifrar el modelo.', error);
+    } finally {
+      if (payload != null) secureZeroMemory(payload);
+      if (derivedKey != null) secureZeroMemory(derivedKey);
+      if (plaintextBytes != null) secureZeroMemory(plaintextBytes);
     }
   }
 
@@ -464,11 +486,10 @@ abstract final class AuraCryptoLayer {
         ),
       );
       final ciphertextLength = payload.length - _ivLength;
-      if (ciphertextLength < _aesBlockLength ||
-          ciphertextLength % _aesBlockLength != 0 ||
+      if (ciphertextLength < _gcmTagLength ||
           ciphertextLength > _maxModelCiphertextBytes) {
         throw const AuraCryptoException(
-          'La longitud del ciphertext AES no es válida.',
+          'La longitud del ciphertext GCM no es válida.',
         );
       }
 
