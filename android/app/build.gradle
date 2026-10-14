@@ -19,8 +19,8 @@ android {
     namespace "com.ciberdefensa.aura"
     compileSdk 36
 
-    // ✅ SOLUCIÓN: Forzar una versión de NDK estable y disponible en los repositorios de Android
-    ndkVersion "26.3.11579264"
+    // ✅ ACTUALIZACIÓN: Usar la versión más alta requerida por los plugins (es retrocompatible)
+    ndkVersion "28.2.13676358"
 
     buildFeatures {
         buildConfig true

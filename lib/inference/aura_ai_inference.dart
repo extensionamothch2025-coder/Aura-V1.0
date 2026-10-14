@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -99,6 +100,13 @@ class AuraAIInference {
     r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$',
   );
   static const int _maximumTreeDepth = 32;
+  static const Set<String> _domainFields = <String>{
+    'domain',
+    'host',
+    'hostname',
+    'qname',
+    'requested_domain',
+  };
   static const MethodChannel _blocklistChannel =
       MethodChannel('com.ciberdefensa.aura/blocklist');
   static const int _binaryHeaderLength = 8;
@@ -200,6 +208,106 @@ class AuraAIInference {
     return _extractHosts(rawData)
         .where((host) => InternetAddress.tryParse(host) == null)
         .toList(growable: false);
+  }
+
+  static Iterable<String> _extractHosts(String rawData) sync* {
+    final trimmedData = rawData.trim();
+    if (trimmedData.isEmpty) return;
+
+    final rawAddressInput = trimmedData.startsWith('[') &&
+            trimmedData.endsWith(']')
+        ? trimmedData.substring(1, trimmedData.length - 1)
+        : trimmedData;
+    final rawAddress = InternetAddress.tryParse(rawAddressInput);
+    if (rawAddress != null) {
+      yield rawAddress.address.toLowerCase();
+      return;
+    }
+
+    Object? decoded;
+    var decodedJson = false;
+    try {
+      decoded = jsonDecode(rawData);
+      decodedJson = true;
+    } on FormatException {
+      // Plain-text host files are parsed one line at a time below.
+    }
+    if (decodedJson) {
+      if (decoded is String) {
+        final host = _parseHostname(decoded);
+        if (host != null) yield host;
+      } else {
+        yield* _extractHostsFromJson(decoded);
+      }
+      return;
+    }
+
+    for (final line in rawData.split('\n')) {
+      final trimmedLine = line.trim();
+      if (trimmedLine.isEmpty || trimmedLine.startsWith('#')) continue;
+      final host = _parseHostname(trimmedLine);
+      if (host != null) yield host;
+    }
+  }
+
+  static Iterable<String> _extractHostsFromJson(
+    Object? value, [
+    int depth = 0,
+  ]) sync* {
+    if (depth > _maximumTreeDepth) {
+      throw const FormatException('El payload JSON supera la profundidad permitida.');
+    }
+    if (value is Map) {
+      for (final entry in value.entries) {
+        final key = entry.key.toString().toLowerCase();
+        if (_domainFields.contains(key) && entry.value is String) {
+          final host = _parseHostname(entry.value as String);
+          if (host != null) yield host;
+        } else {
+          yield* _extractHostsFromJson(entry.value, depth + 1);
+        }
+      }
+    } else if (value is List) {
+      for (final entry in value) {
+        yield* _extractHostsFromJson(entry, depth + 1);
+      }
+    }
+  }
+
+  static String? _parseHostname(String line) {
+    final trimmedLine = line.trim();
+    if (trimmedLine.isEmpty || trimmedLine.startsWith('#')) return null;
+    final parts = trimmedLine.split(RegExp(r'\s+'));
+    if (parts.isEmpty) return null;
+
+    var candidate = parts.length >= 2 &&
+            InternetAddress.tryParse(parts.first) != null
+        ? parts[1]
+        : parts.first;
+    candidate = candidate.toLowerCase().trim();
+    if (candidate.isEmpty) return null;
+
+    if (candidate.contains('://')) {
+      final uri = Uri.tryParse(candidate);
+      if (uri == null ||
+          (uri.scheme != 'http' && uri.scheme != 'https') ||
+          uri.userInfo.isNotEmpty ||
+          uri.host.isEmpty) {
+        return null;
+      }
+      candidate = uri.host.toLowerCase();
+    } else if (candidate.contains(RegExp(r'[/\\?#@:%]'))) {
+      return null;
+    }
+
+    if (candidate.endsWith('.')) {
+      candidate = candidate.substring(0, candidate.length - 1);
+    }
+    if (_hostnamePattern.hasMatch(candidate) &&
+        InternetAddress.tryParse(candidate) == null) {
+      return candidate;
+    }
+    return null;
   }
 
   static Future<Set<String>> findBlocklistedDomains(
