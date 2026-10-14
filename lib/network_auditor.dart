@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -123,6 +124,91 @@ String? _normalizeIpAddress(String input) {
   return InternetAddress.tryParse(candidate)?.address;
 }
 
+typedef DoHWarningCallback = void Function(String appName, int connectionCount);
+
+class DoHBehaviorDetector {
+  static const Duration _window = Duration(hours: 1);
+  static const int _connectionThreshold = 50;
+
+  final Map<String, int> _appUdpConnections = <String, int>{};
+  final Map<String, DateTime> _appLastSeen = <String, DateTime>{};
+  final Map<String, Queue<DateTime>> _appConnectionTimes =
+      <String, Queue<DateTime>>{};
+  final Set<String> _warnedApps = <String>{};
+  final DoHWarningCallback? _onWarning;
+
+  DoHBehaviorDetector({DoHWarningCallback? onWarning}) : _onWarning = onWarning;
+
+  bool trackUdpConnection(String appName, int port, {DateTime? at}) {
+    final normalizedAppName = appName.trim();
+    if (normalizedAppName.isEmpty || (port != 853 && port != 443)) {
+      return false;
+    }
+
+    final now = at ?? DateTime.now();
+    final connections = _appConnectionTimes.putIfAbsent(
+      normalizedAppName,
+      Queue<DateTime>.new,
+    );
+    final cutoff = now.subtract(_window);
+    while (connections.isNotEmpty && !connections.first.isAfter(cutoff)) {
+      connections.removeFirst();
+    }
+    if (connections.isEmpty) _warnedApps.remove(normalizedAppName);
+    _pruneInactiveApps(now, normalizedAppName);
+
+    connections.addLast(now);
+    _appUdpConnections[normalizedAppName] = connections.length;
+    _appLastSeen[normalizedAppName] = now;
+    if (connections.length <= _connectionThreshold) {
+      _warnedApps.remove(normalizedAppName);
+      return false;
+    }
+
+    if (_warnedApps.add(normalizedAppName)) {
+      _showDoHWarning(normalizedAppName, connections.length);
+    }
+    return true;
+  }
+
+  void _pruneInactiveApps(DateTime now, String currentAppName) {
+    final inactiveApps = _appLastSeen.entries
+        .where(
+          (entry) =>
+              entry.key != currentAppName &&
+              !entry.value.isAfter(now.subtract(_window)),
+        )
+        .map((entry) => entry.key)
+        .toList(growable: false);
+    for (final appName in inactiveApps) {
+      _appLastSeen.remove(appName);
+      _appUdpConnections.remove(appName);
+      _appConnectionTimes.remove(appName);
+      _warnedApps.remove(appName);
+    }
+  }
+
+  void _showDoHWarning(String appName, int connectionCount) {
+    developer.log(
+      'Uso intensivo de DNS cifrado: $appName registró $connectionCount '
+      'conexiones UDP a 853/443 durante una hora.',
+      name: 'AuraNetworkAuditor',
+      level: 900,
+    );
+    try {
+      _onWarning?.call(appName, connectionCount);
+    } on Object catch (error, stackTrace) {
+      developer.log(
+        'No se pudo mostrar la advertencia de DNS cifrado.',
+        name: 'AuraNetworkAuditor',
+        error: error,
+        stackTrace: stackTrace,
+        level: 900,
+      );
+    }
+  }
+}
+
 class AuraNetworkAuditor {
   static const EventChannel _networkEvents =
       EventChannel('com.aura.cyberdefense/network_stream');
@@ -141,6 +227,7 @@ class AuraNetworkAuditor {
       Queue<Map<String, Object>>();
     final Queue<NetworkAuditEvent> _pendingThreatEvents =
       Queue<NetworkAuditEvent>();
+  final DoHBehaviorDetector _doHBehaviorDetector;
   final AuraSecureVault _secureVault;
     late final AuraAIBrain _aiBrain;
 
@@ -151,8 +238,12 @@ class AuraNetworkAuditor {
   bool _disposed = false;
   int _droppedPendingWrites = 0;
 
-  AuraNetworkAuditor({AuraSecureVault? secureVault, AuraAIBrain? aiBrain})
-      : _secureVault = secureVault ?? AuraSecureVault() {
+  AuraNetworkAuditor({
+    AuraSecureVault? secureVault,
+    AuraAIBrain? aiBrain,
+    DoHWarningCallback? onDoHWarning,
+  })  : _secureVault = secureVault ?? AuraSecureVault(),
+        _doHBehaviorDetector = DoHBehaviorDetector(onWarning: onDoHWarning) {
     _aiBrain = aiBrain ?? AuraAIBrain();
     _aiBrain.setDnsBlockRuleHandler(addDnsBlockRule);
     start();
@@ -226,6 +317,7 @@ class AuraNetworkAuditor {
     if (_recentEvents.length == _maxRecentEvents) _recentEvents.removeFirst();
     _recentEvents.addLast(event);
     _eventController.add(event);
+    _trackEncryptedDnsUsage(event);
 
     if (event.action == NetworkAuditAction.blocked ||
         event.action == NetworkAuditAction.dgaAlert ||
@@ -242,6 +334,16 @@ class AuraNetworkAuditor {
     }
     _pendingWrites.addLast(event.toJson());
     _drainWrites();
+  }
+
+  void _trackEncryptedDnsUsage(NetworkAuditEvent event) {
+    if (event.action != NetworkAuditAction.encryptedDnsBlocked ||
+        event.transportProtocol?.trim().toUpperCase() != 'UDP') {
+      return;
+    }
+    final port = event.destinationPort;
+    if (port == null) return;
+    _doHBehaviorDetector.trackUdpConnection(event.sourceApp, port);
   }
 
   Future<bool> addDnsBlockRule(String domain) async {

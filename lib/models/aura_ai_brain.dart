@@ -16,6 +16,9 @@ class AuraInferenceResult {
   final double threatScore;
   final bool isThreat;
   final Map<String, double> computedFeatures;
+
+  shared_features.ThreatLevel get level =>
+      shared_features.AuraAIInference.threatLevelForConfidence(threatScore);
 }
 
 abstract final class AuraAIInference {
@@ -149,7 +152,7 @@ abstract final class AuraAIInference {
       results.add(<String, Object?>{
         'host': host,
         'threat_score': threatScore,
-        'is_threat': threatScore >= 0.5,
+        'is_threat': threatScore >= 0.75,
         'features': <String, double>{
           'length': features[0],
           'entropy': features[1],

@@ -6,6 +6,16 @@ import 'package:flutter/services.dart';
 
 import 'aura_common_domains.dart';
 
+enum ThreatLevel { safe, suspicious, threat }
+
+class InferenceResult {
+  const InferenceResult(this.level, this.confidence, this.domain);
+
+  final ThreatLevel level;
+  final double confidence;
+  final String domain;
+}
+
 class AuraAIInference {
   static const List<String> enhancedFeatureOrder = <String>[
     'length',
@@ -111,17 +121,47 @@ class AuraAIInference {
     return _evaluateEnsemble(Float64List.fromList(features), trainedModelJson);
   }
 
-  /// Retains the original six unscaled values for legacy diagnostics.
+  static InferenceResult classifyDomain(
+    String rawDomain,
+    Map<String, dynamic> trainedModelJson,
+  ) {
+    final host = _normalizeHost(rawDomain);
+    if (host == null) {
+      throw const FormatException('El host no tiene un formato válido.');
+    }
+    if (_isAllowlisted(host)) {
+      return InferenceResult(ThreatLevel.safe, 0, host);
+    }
+
+    final features = _featuresForModel(host, trainedModelJson['feature_order']);
+    final votes = _evaluateVotes(
+      Float64List.fromList(features),
+      trainedModelJson,
+    );
+    if (votes.$2 == 0) {
+      throw const FormatException('El bosque de inferencia no contiene árboles.');
+    }
+    final confidence = votes.$1 / votes.$2;
+    return InferenceResult(
+      threatLevelForConfidence(confidence),
+      confidence,
+      host,
+    );
+  }
+
+  static ThreatLevel threatLevelForConfidence(double confidence) {
+    if (!confidence.isFinite || confidence < 0 || confidence > 1) {
+      throw RangeError.range(confidence, 0, 1, 'confidence');
+    }
+    if (confidence < 0.40) return ThreatLevel.safe;
+    if (confidence < 0.75) return ThreatLevel.suspicious;
+    return ThreatLevel.threat;
+  }
+
+  /// Returns all 18 features keyed by their stable schema order.
   static Map<String, double> extractFeatures(String rawHost) {
-    final values = extractLegacyFeatures(rawHost);
-    return <String, double>{
-      'length': values[0],
-      'shannon_entropy': values[1],
-      'digit_ratio': values[2],
-      'vowel_ratio': values[3],
-      'consonant_sequence_ratio': values[4],
-      'suspicious_tld': values[5],
-    };
+    final values = extractEnhancedFeatures(rawHost);
+    return Map<String, double>.fromIterables(enhancedFeatureOrder, values);
   }
 
   /// Returns 18 features, preserving the six legacy values and adding
@@ -747,8 +787,17 @@ class AuraAIInference {
     Float64List features,
     Map<String, dynamic> model,
   ) {
+    final votes = _evaluateVotes(features, model);
+    if (votes.$2 == 0) return false;
+    return votes.$1 / votes.$2 < 0.5;
+  }
+
+  static (int, int) _evaluateVotes(
+    Float64List features,
+    Map<String, dynamic> model,
+  ) {
     final trees = model['trees'];
-    if (trees == null || (trees is List && trees.isEmpty)) return false;
+    if (trees == null || (trees is List && trees.isEmpty)) return (0, 0);
     if (trees is! List) {
       throw const FormatException('El bosque de inferencia no es válido.');
     }
@@ -760,7 +809,7 @@ class AuraAIInference {
       }
       threatVotes += _evaluateNode(tree['root'], features);
     }
-    return threatVotes / trees.length < 0.5;
+    return (threatVotes, trees.length);
   }
 
   static int _evaluateNode(

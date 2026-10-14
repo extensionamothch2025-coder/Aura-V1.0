@@ -194,11 +194,14 @@ object AuraAppGenomeScanner {
             }
         }
 
-        return packageManager.getInstalledPackages(PackageManager.GET_PERMISSIONS)
+        return packageManager.getInstalledPackages(
+            PackageManager.GET_PERMISSIONS or PackageManager.MATCH_UNINSTALLED_PACKAGES,
+        )
             .asSequence()
             .filter { packageInfo ->
                 val appInfo = packageInfo.applicationInfo
                 appInfo != null &&
+                    (appInfo.flags and ApplicationInfo.FLAG_INSTALLED) != 0 &&
                     (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) == 0
             }
             .mapNotNull { packageInfo ->

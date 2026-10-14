@@ -84,6 +84,8 @@ void main() {
               6 * (1 / length) * (math.log(1 / length) / math.ln2));
 
       expect(enhanced, hasLength(18));
+      expect(features.keys.toList(), AuraAIInference.enhancedFeatureOrder);
+      expect(features.values.toList(), enhanced);
       expect(AuraAIInference.enhancedFeatureOrder, <String>[
         'length',
         'shannon_entropy',
@@ -259,6 +261,28 @@ void main() {
   });
 
   group('Allowlist boundary and ensemble decisions', () {
+    test('classifies vote confidence into the three threat levels', () {
+      final safe = AuraAIInference.classifyDomain(
+        'ordinary.example',
+        _forest(<int>[0, 0, 0, 0, 0]),
+      );
+      final suspicious = AuraAIInference.classifyDomain(
+        'ordinary.example',
+        _forest(<int>[1, 1, 0, 0, 0]),
+      );
+      final threat = AuraAIInference.classifyDomain(
+        'ordinary.example',
+        _forest(<int>[1, 1, 1, 0]),
+      );
+
+      expect(safe.level, ThreatLevel.safe);
+      expect(safe.confidence, 0);
+      expect(suspicious.level, ThreatLevel.suspicious);
+      expect(suspicious.confidence, 0.4);
+      expect(threat.level, ThreatLevel.threat);
+      expect(threat.confidence, 0.75);
+    });
+
     test('checks all official suffixes and their subdomains', () {
       final threateningModel = _forest(<int>[1, 1, 1]);
 

@@ -20,6 +20,12 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
 object AuraHostileEnvironment {
+    enum class EnvironmentStatus {
+        CLEAN,
+        ROOTED,
+        EMULATOR,
+    }
+
     private const val LOG_TAG = "AuraHostileEnvironment"
     private const val EMULATOR_CONFIDENCE_THRESHOLD = 50
     @Volatile
@@ -124,11 +130,17 @@ object AuraHostileEnvironment {
         indicators.addAll(instrumentationIndicators)
         indicators.addAll(overlayReport.indicators)
         val rooted = rootIndicators.any { it != "build_tags_test_keys" }
+        val environmentStatus = when {
+            rooted -> EnvironmentStatus.ROOTED
+            emulatorReport.isEmulator -> EnvironmentStatus.EMULATOR
+            else -> EnvironmentStatus.CLEAN
+        }
         val hostile = emulatorReport.isEmulator ||
             indicators.any { !it.startsWith("emulator_") }
         val rootConfidence = rootConfidence(rootIndicators)
         return mapOf(
             "isEmulator" to emulatorReport.isEmulator,
+            "environmentStatus" to environmentStatus.name,
             "emulatorConfidence" to emulatorReport.confidence,
             "emulatorIndicators" to emulatorReport.indicators,
             "isDebuggerConnected" to debuggerConnected,

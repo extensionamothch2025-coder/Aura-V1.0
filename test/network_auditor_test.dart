@@ -2,6 +2,68 @@ import 'package:aura_mobile_defens/network_auditor.dart';
 import 'package:test/test.dart';
 
 void main() {
+  group('DoH behavior detector', () {
+    test('warns once after more than 50 matching UDP connections', () {
+      final warnings = <String>[];
+      final detector = DoHBehaviorDetector(
+        onWarning: (appName, count) => warnings.add('$appName:$count'),
+      );
+      final start = DateTime.utc(2026, 10, 14);
+
+      for (var index = 0; index < 50; index++) {
+        expect(
+          detector.trackUdpConnection('com.example.app', 853, at: start),
+          isFalse,
+        );
+      }
+      expect(warnings, isEmpty);
+      expect(
+        detector.trackUdpConnection('com.example.app', 443, at: start),
+        isTrue,
+      );
+      expect(warnings, <String>['com.example.app:51']);
+      expect(
+        detector.trackUdpConnection('com.example.app', 443, at: start),
+        isTrue,
+      );
+      expect(warnings, hasLength(1));
+
+      final afterWindow = start.add(const Duration(hours: 1, seconds: 1));
+      for (var index = 0; index < 51; index++) {
+        detector.trackUdpConnection('com.example.app', 443, at: afterWindow);
+      }
+      expect(warnings, hasLength(2));
+    });
+
+    test('expires old connections outside the rolling hour', () {
+      final warnings = <String>[];
+      final detector = DoHBehaviorDetector(
+        onWarning: (appName, count) => warnings.add(appName),
+      );
+      final start = DateTime.utc(2026, 10, 14);
+      for (var index = 0; index < 51; index++) {
+        detector.trackUdpConnection('com.example.app', 853, at: start);
+      }
+
+      expect(
+        detector.trackUdpConnection(
+          'com.example.app',
+          853,
+          at: start.add(const Duration(hours: 1, seconds: 1)),
+        ),
+        isFalse,
+      );
+      expect(warnings, <String>['com.example.app']);
+    });
+
+    test('ignores ports outside encrypted DNS and blank app names', () {
+      final detector = DoHBehaviorDetector();
+
+      expect(detector.trackUdpConnection('com.example.app', 53), isFalse);
+      expect(detector.trackUdpConnection('', 853), isFalse);
+    });
+  });
+
   group('NetworkAuditEvent platform events', () {
     test('preserves observed SNI and resolver endpoint metadata', () {
       final event = NetworkAuditEvent.fromPlatform(<String, Object>{

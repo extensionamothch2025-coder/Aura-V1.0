@@ -14,6 +14,7 @@ import 'models/aura_ai_brain.dart';
 import 'secure_vault.dart';
 import 'providers/aura_state_provider.dart';
 import 'security/shannon_entropy.dart';
+import 'services/security_service.dart';
 
 export 'security/shannon_entropy.dart';
 
@@ -94,6 +95,7 @@ class AuraAIBrain {
   static bool _forceRuleFallback = false;
 
   final AuraStateProvider? _stateProvider;
+  final SecurityService _securityService;
   final AuraSecureVault _secureVault;
   final AuraToolStartedCallback? _onToolStarted;
   final AuraToolCompletedCallback? _onToolCompleted;
@@ -103,11 +105,13 @@ class AuraAIBrain {
 
   AuraAIBrain({
     AuraStateProvider? stateProvider,
+    SecurityService? securityService,
     AuraSecureVault? secureVault,
     AuraToolStartedCallback? onToolStarted,
     AuraToolCompletedCallback? onToolCompleted,
     AuraDnsBlockRuleHandler? onDnsBlockRule,
     })  : _stateProvider = stateProvider,
+      _securityService = securityService ?? SecurityService(),
       _secureVault = secureVault ?? AuraSecureVault(),
         _onToolStarted = onToolStarted,
         _onToolCompleted = onToolCompleted,
@@ -141,6 +145,8 @@ class AuraAIBrain {
       analyzeThreatPayload(userInput);
 
   Future<bool> preloadModel() async {
+    await _securityService.checkEnvironment();
+    if (!_securityService.isMlAdvancedEnabled) return false;
     final model = await _getModel();
     return !_forceRuleFallback && model['trees'] is List;
   }
@@ -362,6 +368,10 @@ class AuraAIBrain {
 
   Future<String> analyzeThreatPayload(String payload) async {
     try {
+      await _securityService.checkEnvironment();
+      if (!_securityService.isMlAdvancedEnabled) {
+        _stateProvider?.setSecurityLevel(AuraSecurityLevel.warning);
+      }
       final extractedDomains = _extractDomains(payload);
       final blocklistedDomains = await shared_features.AuraAIInference
           .findBlocklistedDomains(extractedDomains);
@@ -409,6 +419,18 @@ class AuraAIBrain {
                   .toList(growable: false),
             });
 
+          if (!_securityService.isMlAdvancedEnabled) {
+            final domains = _extractDomains(inferencePayload);
+            if (domains.isEmpty) {
+              return 'ADVERTENCIA: ML avanzado pausado por el entorno detectado; '
+              'las listas de bloqueo y reglas locales siguen activas.';
+            }
+            _stateProvider?.setSecurityLevel(AuraSecurityLevel.warning);
+            return 'ADVERTENCIA: ML avanzado pausado por el entorno detectado; '
+            'se mantienen las listas de bloqueo y reglas locales.\n'
+            '${_analyzeWithDefaultRules(domains)}';
+          }
+
       if (_forceRuleFallback) {
         final domains = _extractDomains(inferencePayload);
         if (domains.isEmpty) {
@@ -447,7 +469,8 @@ class AuraAIBrain {
       for (final inference in inferenceResults) {
         final domain = inference.host;
         final threatScore = inference.threatScore;
-        final isThreat = inference.isThreat;
+        final level = inference.level;
+        final isThreat = level == shared_features.ThreatLevel.threat;
         if (AuraWhitelist.isSafe(domain)) {
           await _recordDomainOutcome(
             domain,
@@ -472,7 +495,20 @@ class AuraAIBrain {
         );
         _stateProvider?.recordLocalForestEvaluation();
 
-        if (isThreat) {
+        if (level == shared_features.ThreatLevel.suspicious) {
+          _stateProvider?.setSecurityLevel(AuraSecurityLevel.warning);
+          developer.log(
+            'Dominio sospechoso: $domain '
+            '(${(threatScore * 100).toStringAsFixed(0)}% de votos de amenaza); '
+            'no se aplicó bloqueo.',
+            name: 'AuraAIInference',
+            level: 900,
+          );
+          results.add(
+            'ADVERTENCIA: $domain (${(threatScore * 100).toStringAsFixed(0)}% '
+            'de votos de amenaza); revisión recomendada, sin bloqueo.',
+          );
+        } else if (isThreat) {
           _stateProvider?.setSecurityLevel(AuraSecurityLevel.critical);
           final arguments = <String, Object?>{'domain': domain};
           _onToolStarted?.call('mitigate_network_threat', arguments);

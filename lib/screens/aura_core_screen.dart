@@ -81,6 +81,16 @@ class _AuraCoreScreenState extends State<AuraCoreScreen> {
     final state = context.read<AuraStateProvider>();
     final auditor = AuraNetworkAuditor(
       aiBrain: AuraAIBrain(stateProvider: state),
+      onDoHWarning: (appName, connectionCount) {
+        state.setSecurityLevel(AuraSecurityLevel.warning);
+        final appLabel = appName == 'uid-unavailable'
+            ? 'una app no identificada'
+            : appName;
+        AgentController.instance.reportWarning(
+          'Uso intensivo de DNS cifrado por $appLabel: '
+          '$connectionCount conexiones UDP en una hora.',
+        );
+      },
     );
     _networkAuditor = auditor;
     _networkEventSubscription = auditor.eventStream.listen(
